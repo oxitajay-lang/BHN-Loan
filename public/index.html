@@ -29,4 +29,64 @@ hi:{login:'लॉगिन',signup:'साइन अप',bhn:'BHN आईडी',
 let L=localStorage.lang||'en',t=k=>T[L][k]||k,mode='login',step=0,tmp={},plan=null,tab='loans';
 const $=s=>document.querySelector(s),e=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
 const api=(u,b,m)=>fetch('/api/'+u,{method:m||(b?'POST':'GET'),headers:{'Content-Type':'application/json'},body:b&&JSON.stringify(b)}).then(r=>r.json());
-const v=id=>document.getElementById(id).value, er
+const v=id=>document.getElementById(id).value, err=m=>{const x=$('#err');if(x)x.textContent=m||''};
+function setLang(l){L=l;localStorage.lang=l;render()}
+$('#lang').value=L;
+const inp=(id,k,ty='text',ex='')=>`<label>${t(k)}</label><input id="${id}" type="${ty}" ${ex}>`;
+
+async function render(){
+  $('#lang').value=L;
+  if(location.hash==='#team')return team();
+  const m=await api('me');
+  $('#out').innerHTML=m.user?`<button class="g s" onclick="api('logout',{}).then(render)">${t('logout')}</button>`:'';
+  m.user?dash(m):auth();
+}
+function auth(){
+  const tabs=`<div class="tabs"><button class="${mode=='login'?'':'g'}" onclick="mode='login';step=0;render()">${t('login')}</button><button class="${mode=='signup'?'':'g'}" onclick="mode='signup';step=0;render()">${t('signup')}</button></div>`;
+  let h='';
+  if(mode=='login')h=`${inp('b','bhn')}${inp('p','pw','password')}<button onclick="doLogin()">${t('login')}</button><p><a onclick="mode='forgot';step=0;render()">${t('forgot')}</a></p>`;
+  else if(mode=='signup'&&step==0)h=inp('name','name')+inp('email','email','email')+inp('acct','acct','text','inputmode=numeric')+inp('ifsc','ifsc')+inp('state','state')+inp('district','district')+inp('aadhaar','aadhaar','text','inputmode=numeric maxlength=12')+inp('p','pw','password')+inp('c','cpw','password')+`<p class="mu">${t('pwHint')}</p><button onclick="doSignup()">${t('sendOtp')}</button>`;
+  else if(mode=='signup'&&step==1)h=inp('o','otp','text','inputmode=numeric')+`<button onclick="doVerify()">${t('verify')}</button>`;
+  else if(mode=='signup')h=`<p>${t('yourBhn')}</p><h2>${e(tmp.bhn)}</h2><button onclick="mode='login';render()">${t('toLogin')}</button>`;
+  else if(step==0)h=inp('email','email','email')+`<button onclick="doForgot()">${t('sendOtp')}</button>`;
+  else h=inp('o','otp')+inp('p','newpw','password')+`<p class="mu">${t('pwHint')}</p><button onclick="doReset()">${t('reset')}</button>`;
+  $('#app').innerHTML=`<div class="card">${mode=='forgot'?'':tabs}${h}<div class="err" id="err"></div></div>`;
+}
+async function doLogin(){const r=await api('login',{bhn:v('b'),password:v('p')});r.error?err(r.error):render()}
+async function doSignup(){const f={};['name','email','acct','ifsc','state','district','aadhaar'].forEach(k=>f[k]=v(k).trim());f.password=v('p');f.confirm=v('c');
+  const r=await api('signup',f);if(r.error)return err(r.error);tmp={email:f.email};step=1;render()}
+async function doVerify(){const r=await api('signup/verify',{email:tmp.email,code:v('o')});if(r.error)return err(r.error);tmp.bhn=r.bhn;step=2;render()}
+async function doForgot(){tmp.email=v('email');await api('forgot',{email:tmp.email});step=1;render()}
+async function doReset(){const r=await api('reset',{email:tmp.email,code:v('o'),password:v('p')});if(r.error)return err(r.error);mode='login';step=0;render()}
+
+function dash(m){
+  const {user,plans,loan,inst}=m,all=[100,200,300,500,700,1000,1500,2000],busy=loan&&(['pending','mobile_verified'].includes(loan.status)||inst.some(i=>i.status!='paid'));
+  let h=`<div class="card"><b>${e(user.name)}</b> · ${e(user.bhn)} <span class="tag ${user.level}">${t('level')}: ${user.level}</span></div>`;
+  if(!busy)h+=`<div class="card"><h3>${t('choose')}</h3><p class="mu">${t('interest')} ${m.rate}% · ${t('inst')}</p><div class="plans">${all.map(a=>`<div class="plan ${plans.includes(a)?(plan==a?'on':''):'off'}" onclick="${plans.includes(a)?`plan=${a};dash(window.M)`:''}">₹${a}</div>`).join('')}</div>${plan?`<p>${t('total')}: ₹${(plan*1.04).toFixed(2)} (4 × ₹${(plan*1.04/4).toFixed(2)})</p>${inp('mob','mobile','tel','maxlength=10 inputmode=numeric')}<button onclick="applyLoan()">${t('submit')}</button>`:''}<div class="err" id="err"></div></div>`;
+  if(loan)h+=`<div class="card"><b>${t('status')}:</b> ₹${loan.amount} — ${t(loan.status)}</div>`;
+  if(inst.length)h+=`<div class="card sc"><table><tr><th>#</th><th>${t('due')}</th><th>${t('amount')}</th><th></th></tr>${inst.map(i=>`<tr><td>${i.no}</td><td>${i.due}</td><td>₹${i.amount}</td><td>${i.status=='pending'?`<button class="s" onclick="payUi(${i.id})">${t('pay')}</button>`:`<span class="tag">${t(i.status)}</span>`}</td></tr>`).join('')}</table></div>`;
+  window.M=m;$('#app').innerHTML=h;
+}
+async function applyLoan(){const r=await api('loan',{amount:plan,mobile:v('mob')});if(r.error)return err(r.error);plan=null;render()}
+async function payUi(id){const u=await api('upi?id='+id);const d=document.createElement('div');d.className='modal';
+  d.innerHTML=`<div class="card" style="max-width:340px;text-align:center"><h3>${t('payTo')} ₹${u.amount}</h3><img src="${u.qr}" width="200"><p>${t('scan')}<br><b>${e(u.upi)}</b></p><input id="utr" placeholder="${t('utr')}" inputmode="numeric" maxlength="12"><div class="err" id="err"></div><button onclick="sendUtr(${id})">${t('verify')}</button> <button class="g" onclick="this.closest('.modal').remove()">${t('back')}</button></div>`;document.body.append(d)}
+async function sendUtr(id){const r=await api('pay',{id,utr:v('utr')});if(r.error)return err(r.error);$('.modal').remove();render()}
+
+// ---------- team panel: open /#team ----------
+async function team(){
+  const d=await api('team/data');
+  if(d.error){$('#app').innerHTML=`<div class="card"><h3>Team login</h3><label>Team ID</label><input id="tl">${inp('tp','pw','password')}<button onclick="teamLogin()">${t('login')}</button><div class="err" id="err"></div></div>`;return}
+  $('#out').innerHTML=`<button class="g s" onclick="api('logout',{}).then(()=>{location.hash='';render()})">${t('logout')}</button>`;
+  const tabs=['loans','payments','customers','levels'].concat(d.role=='admin'?['team']:[]);
+  let h=`<div class="tabs">${tabs.map(x=>`<button class="${tab==x?'':'g'}" onclick="tab='${x}';team()">${x}</button>`).join('')}</div><div class="card sc">`;
+  const act=(u,l,c='')=>`<button class="s ${c}" onclick="api('${u}',{}).then(team)">${l}</button> `;
+  if(tab=='loans')h+=`<table><tr><th>Date</th><th>Customer</th><th>₹</th><th>Mobile</th><th>Status</th><th></th></tr>${d.loans.map(l=>`<tr><td>${l.created.slice(0,10)}</td><td>${e(l.name)} (${l.bhn})</td><td>${l.amount}</td><td>${l.mobile}</td><td>${l.status}</td><td>${l.status=='pending'?act(`team/loan/${l.id}/mobile`,'Mobile verified'):''}${l.status=='mobile_verified'?act(`team/loan/${l.id}/approve`,'Approve loan'):''}${['pending','mobile_verified'].includes(l.status)?act(`team/loan/${l.id}/reject`,'Reject','r'):''}</td></tr>`).join('')}</table>`;
+  if(tab=='payments')h+=`<table><tr><th>Customer</th><th>Inst</th><th>₹</th><th>UTR</th><th></th></tr>${d.pays.map(p=>`<tr><td>${e(p.name)} (${p.bhn})</td><td>#${p.no} ${p.due}</td><td>${p.amount}</td><td>${e(p.utr)}</td><td>${act(`team/pay/${p.id}/approve`,'Approve')}${act(`team/pay/${p.id}/reject`,'Reject','r')}</td></tr>`).join('')||'<tr><td>No pending payments</td></tr>'}</table>`;
+  if(tab=='customers')h+=`<table><tr><th>Joined</th><th>BHN</th><th>Name</th><th>Email</th><th>Account</th><th>IFSC</th><th>State</th><th>District</th><th>Aadhaar</th><th></th></tr>${d.users.map(u=>`<tr><td>${u.created.slice(0,10)}</td><td>${u.bhn}</td><td>${e(u.name)}</td><td>${e(u.email)}</td><td>${e(u.acct)}</td><td>${e(u.ifsc)}</td><td>${e(u.state)}</td><td>${e(u.district)}</td><td>${e(u.aadhaar)}</td><td><button class="s r" onclick="confirm('Delete customer?')&&api('team/user/${u.id}',null,'DELETE').then(team)">Delete</button></td></tr>`).join('')}</table>`;
+  if(tab=='levels')h+=`<table><tr><th>BHN</th><th>Name</th><th>Level</th></tr>${d.users.map(u=>`<tr><td>${u.bhn}</td><td>${e(u.name)}</td><td><select style="width:auto;margin:0" onchange="api('team/user/${u.id}/level',{level:this.value})">${['silver','gold','diamond'].map(x=>`<option ${u.level==x?'selected':''}>${x}</option>`).join('')}</select></td></tr>`).join('')}</table>`;
+  if(tab=='team')h+=`<h3>Create team login</h3><input id="nl" placeholder="Login ID"><input id="np" type="password" placeholder="Password (8+, letter, number, symbol)"><button onclick="api('admin/team',{login:v('nl'),password:v('np')}).then(r=>r.error?alert(r.error):team())">Create</button><table>${d.team.map(x=>`<tr><td>${e(x.login)}</td><td>${x.role}</td><td>${x.role=='team'?`<button class="s r" onclick="api('admin/team/${x.id}',null,'DELETE').then(team)">Remove</button>`:''}</td></tr>`).join('')}</table>`;
+  $('#app').innerHTML=h+'</div>';
+}
+async function teamLogin(){const r=await api('team/login',{login:v('tl'),password:v('tp')});r.error?err(r.error):team()}
+addEventListener('hashchange',render);render();
+</script></body></html>
