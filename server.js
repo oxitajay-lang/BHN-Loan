@@ -9,6 +9,7 @@ const dec = s => { const [i, g, b] = s.split('.').map(x => Buffer.from(x, 'hex')
 
 const db = new Database('data.db');
 db.exec(`
+create table if not exists deleted(bhn text primary key, email text);
 create table if not exists users(id integer primary key, bhn text unique, name text, email text unique, acct text, ifsc text,
   state text, district text, aadhaar text, pass text, level text default 'silver', created text default (datetime('now')));
 create table if not exists otps(email text, code text, purpose text, data text, exp integer);
@@ -75,8 +76,14 @@ app.post('/api/signup/verify', A(async (q, s) => {
 }));
 app.post('/api/login', A(async (q, s) => {
   if (limited('li' + q.ip)) return s.json({ error: 'Too many attempts, try later' });
-  const u = db.prepare('select * from users where bhn=?').get((q.body.bhn || '').toUpperCase());
-  if (!u || !bcrypt.compareSync(q.body.password || '', u.pass)) return s.json({ error: 'Wrong BHN ID or password' });
+  const bhn = (q.body.bhn || '').toUpperCase();
+  const u = db.prepare('select * from users where bhn=?').get(bhn);
+  if (!u) {
+    if (db.prepare('select 1 from deleted where bhn=?').get(bhn))
+      return s.json({ error: 'Aapka account delete ho chuka hai. Kripya naye account se sign up karein.' });
+    return s.json({ error: 'Wrong BHN ID or password' });
+  }
+  if (!bcrypt.compareSync(q.body.password || '', u.pass)) return s.json({ error: 'Wrong BHN ID or password' });
   q.session.uid = u.id; s.json({ ok: true });
 }));
 app.post('/api/forgot', A(async (q, s) => {
@@ -153,9 +160,13 @@ app.post('/api/team/user/:id/level', needT, A((q, s) => {
 }));
 app.delete('/api/team/user/:id', needT, A((q, s) => {
   db.transaction(() => { const id = q.params.id;
+    const u = db.prepare('select bhn,email from users where id=?').get(id);
+    if (u) db.prepare('insert or replace into deleted(bhn,email) values(?,?)').run(u.bhn, u.email);
     db.prepare('delete from inst where loan_id in (select id from loans where user_id=?)').run(id);
-    db.prepare('delete from loans where user_id=?').run(id); db.prepare('delete from users where id=?').run(id); })();
+    db.prepare('delete from loans where user_id=?').run(id);
+    db.prepare('delete from users where id=?').run(id); })();
   s.json({ ok: true });
+}));
 }));
 app.post('/api/admin/team', needT, needAdmin, A((q, s) => {
   if (!q.body.login || !PASS_RE.test(q.body.password || '')) return s.json({ error: 'Login + strong password required' });
