@@ -9,7 +9,6 @@ const dec = s => { const [i, g, b] = s.split('.').map(x => Buffer.from(x, 'hex')
 
 const db = new Database('data.db');
 db.exec(`
-create table if not exists deleted(bhn text primary key, email text);
 create table if not exists users(id integer primary key, bhn text unique, name text, email text unique, acct text, ifsc text,
   state text, district text, aadhaar text, pass text, level text default 'silver', created text default (datetime('now')));
 create table if not exists otps(email text, code text, purpose text, data text, exp integer);
@@ -17,7 +16,8 @@ create table if not exists loans(id integer primary key, user_id int, amount int
   created text default (datetime('now')), approved_at text);
 create table if not exists inst(id integer primary key, loan_id int, no int, due text, amount real, status text default 'pending',
   utr text, reminded int default 0);
-create table if not exists team(id integer primary key, login text unique, pass text, role text default 'team');`);
+create table if not exists team(id integer primary key, login text unique, pass text, role text default 'team');
+create table if not exists deleted(bhn text primary key, email text);`);
 if (!db.prepare('select 1 from team where role=?').get('admin'))
   db.prepare('insert into team(login,pass,role) values(?,?,?)').run(E.ADMIN_ID || 'admin', bcrypt.hashSync(E.ADMIN_PASS || 'Admin@12345', 10), 'admin');
 
@@ -47,7 +47,7 @@ const A = fn => (req, res) => Promise.resolve(fn(req, res)).catch(e => { console
 const needU = (q, s, n) => q.session.uid ? n() : s.status(401).json({ error: 'Login required' });
 const needT = (q, s, n) => q.session.tid ? n() : s.status(401).json({ error: 'Team login required' });
 const needAdmin = (q, s, n) => q.session.trole === 'admin' ? n() : s.status(403).json({ error: 'Admin only' });
-const attempts = {}; // naive rate limit for logins/OTP
+const attempts = {};
 const limited = (k) => { const n = attempts[k] = (attempts[k] || 0) + 1; setTimeout(() => attempts[k]--, 15 * 60000); return n > 10; };
 
 // ---------- customer ----------
@@ -89,7 +89,7 @@ app.post('/api/login', A(async (q, s) => {
 app.post('/api/forgot', A(async (q, s) => {
   const u = db.prepare('select * from users where email=?').get(q.body.email || '');
   if (u && !limited('fp' + q.ip)) await otp(u.email, 'reset');
-  s.json({ ok: true }); // same reply either way
+  s.json({ ok: true });
 }));
 app.post('/api/reset', A(async (q, s) => {
   if (!PASS_RE.test(q.body.password || '')) return s.json({ error: 'Password: 8+ chars with letter, number and symbol' });
@@ -114,7 +114,14 @@ app.post('/api/loan', needU, A((q, s) => {
 }));
 app.get('/api/upi', needU, A(async (q, s) => {
   const am = db.prepare('select amount from inst where id=?').get(+q.query.id)?.amount;
-  s.json({ upi: UPI_ID, amount: am, qr: await QR.toDataURL(`upi://pay?pa=${UPI_ID}&pn=BroHaiNa&cu=INR${am ? '&am=' + am : ''}`) });
+  const amt = am ? '&am=' + am.toFixed(2) : '';
+  const base = `pa=${UPI_ID}&pn=BroHaiNa&cu=INR${amt}`;
+  s.json({ upi: UPI_ID, amount: am, qr: await QR.toDataURL(`upi://pay?${base}`), links: {
+    generic: `upi://pay?${base}`,
+    phonepe: `phonepe://pay?${base}`,
+    gpay: `tez://upi/pay?${base}`,
+    paytm: `paytmmp://pay?${base}`
+  } });
 }));
 app.post('/api/pay', needU, A((q, s) => {
   const i = db.prepare('select i.* from inst i join loans l on l.id=i.loan_id where i.id=? and l.user_id=?').get(q.body.id, q.session.uid);
@@ -167,13 +174,24 @@ app.delete('/api/team/user/:id', needT, A((q, s) => {
     db.prepare('delete from users where id=?').run(id); })();
   s.json({ ok: true });
 }));
-}));
 app.post('/api/admin/team', needT, needAdmin, A((q, s) => {
   if (!q.body.login || !PASS_RE.test(q.body.password || '')) return s.json({ error: 'Login + strong password required' });
   try { db.prepare('insert into team(login,pass) values(?,?)').run(q.body.login, bcrypt.hashSync(q.body.password, 10)); s.json({ ok: true }); }
   catch { s.json({ error: 'Login already exists' }); }
 }));
 app.delete('/api/admin/team/:id', needT, needAdmin, A((q, s) => { db.prepare("delete from team where id=? and role='team'").run(q.params.id); s.json({ ok: true }); }));
+
+const csvCell = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+app.get('/api/team/export', needT, A((q, s) => {
+  const rows = db.prepare('select * from users order by created').all();
+  const head = ['BHN ID','Naam','Email','Account Number','IFSC','State','District','Aadhaar','Level','Joined'];
+  const lines = [head.map(csvCell).join(',')];
+  rows.forEach(u => lines.push([u.bhn, u.name, u.email, '="' + u.acct + '"', u.ifsc, u.state, u.district,
+    '="' + dec(u.aadhaar) + '"', u.level, u.created].map(csvCell).join(',')));
+  s.set('Content-Type', 'text/csv; charset=utf-8');
+  s.set('Content-Disposition', 'attachment; filename="customers.csv"');
+  s.send('\uFEFF' + lines.join('\r\n'));
+}));
 
 // SMS reminder: 2 days before due
 setInterval(() => {
